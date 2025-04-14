@@ -2,7 +2,7 @@
   "version": 2,
   "builds": [
     {
-      "src": "your_bot_file.py",
+      "src": "main.py",
       "use": "@vercel/python"
     }
   ],
