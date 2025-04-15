@@ -31,7 +31,7 @@ def home():
 
 # Константы
 TELEGRAM_BOT_TOKEN = "7738985245:AAEtSoP8Jc8vRuNEZd5RJQpJ-0NCMaW7Xys"
-CHAT_ID = "2017911073"  # ID чата для уведомлений
+CHAT_ID = "-1002017911073"  # ID чата для уведомлений
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 EXCEL_URL = "https://cloud.toplubricants.ru/s/yWSpybsLPZkjjzp/download"
 
