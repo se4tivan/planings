@@ -1,7 +1,5 @@
-import os
-import logging
-import pandas as pd
 import requests
+from bs4 import BeautifulSoup
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
@@ -14,124 +12,120 @@ logging.basicConfig(
 )
 
 # Константы
-PLANNING_URL = "https://cloud.toplubricants.ru/s/yWSpybsLPZkjjzp"
+PLANNING_URL = "https://cloud.toplubricants.ru/s/yWSpybsLPZkjjzp"  # Замените на URL веб-страницы
 BOT_TOKEN = "7738985245:AAEtSoP8Jc8vRuNEZd5RJQpJ-0NCMaW7Xys"
-START_ROW = 787  # Начинаем с 787 строки
-MONITOR_COLUMNS = ['I', 'L', 'M']
-LOG_CHAT_ID = -1002017911073  # ID чата для отправки данных
+LOG_CHAT_ID = -1002017911073  # ID чата для отправки изменений планинга
 
-def download_planning():
-    """Скачивает файл планинга и сохраняет его локально."""
+# Глобальная переменная для хранения предыдущего состояния
+previous_state = {}
+
+def parse_planning():
+    """Парсит данные из HTML-страницы."""
     try:
         response = requests.get(PLANNING_URL)
-        if response.status_code == 200:
-            with open("planning.xlsx", "wb") as file:
-                file.write(response.content)
-            logging.info("Планинг успешно скачан.")
-            return True
-        else:
-            logging.error(f"Ошибка при скачивании планинга: {response.status_code}")
-            return False
-    except Exception as e:
-        logging.error(f"Ошибка при скачивании планинга: {e}")
-        return False
-
-def read_planning():
-    """Читает данные из файла планинга."""
-    try:
-        if not os.path.exists("planning.xlsx"):
-            logging.error("Файл планинга не найден.")
+        if response.status_code != 200:
+            logging.error(f"Ошибка при получении данных: {response.status_code}")
             return None
 
-        df = pd.read_excel("planning.xlsx", sheet_name=0, header=None)
-        logging.info("Планинг успешно прочитан.")
-        return df
+        soup = BeautifulSoup(response.text, 'html.parser')
+        table = soup.find('table')  # Находим таблицу на странице
+        if not table:
+            logging.error("Таблица не найдена на странице.")
+            return None
+
+        data = []
+        rows = table.find_all('tr')
+        for row in rows[START_ROW:]:  # Начинаем с указанной строки
+            cols = row.find_all('td')
+            if len(cols) < 13:  # Проверяем, что строка содержит нужные столбцы
+                continue
+            date_value = cols[0].text.strip()  # Столбец A (дата)
+            vehicle_info = cols[8].text.strip()  # Столбец I (Марка, номер а/м)
+            order_number = cols[11].text.strip()  # Столбец L (Номер РР)
+            driver_info = cols[12].text.strip()  # Столбец M (ФИО водителя)
+            data.append({
+                'A': date_value,
+                'I': vehicle_info,
+                'L': order_number,
+                'M': driver_info
+            })
+        return data
     except Exception as e:
-        logging.error(f"Ошибка при чтении планинга: {e}")
+        logging.error(f"Ошибка при парсинге данных: {e}")
         return None
 
-def parse_planning(df):
-    """Парсит данные из планинга."""
-    parsed_data = []
-    for row in range(START_ROW, len(df)):
-        date_value = pd.to_datetime(df.iloc[row, 0]).strftime("%y/%m/%d") if pd.notna(df.iloc[row, 0]) else None  # Дата
-        vehicle_info = str(df.iloc[row, 8]).strip() if pd.notna(df.iloc[row, 8]) else None  # Марка, номер а/м
-        order_number = str(df.iloc[row, 11]).strip() if pd.notna(df.iloc[row, 11]) else None  # Номер РР
-        driver_info = str(df.iloc[row, 12]).strip() if pd.notna(df.iloc[row, 12]) else None  # ФИО водителя
+def compare_states(previous, current):
+    """Сравнивает предыдущее и текущее состояние планинга."""
+    changes = []
+    for key, new_values in current.items():
+        if key not in previous:
+            # Это новая строка
+            if new_values['L']:
+                changes.append(f"Новый заказ №{new_values['L']} на дату {new_values['A']}")
+        elif previous[key] != new_values:
+            old_values = previous[key]
+            change_message = f"Изменение в заказе №{new_values['L']} на дату {new_values['A']}: "
+            if old_values['I'] != new_values['I']:
+                change_message += f"{old_values['I']} -> {new_values['I']}; "
+            if old_values['M'] != new_values['M']:
+                change_message += f"{old_values['M']} -> {new_values['M']}; "
+            changes.append(change_message.strip())
+    return changes
 
-        if order_number:
-            parsed_data.append({
-                'date': date_value,
-                'vehicle': vehicle_info,
-                'order': order_number,
-                'driver': driver_info
-            })
-    return parsed_data
+def monitor_planning(context: CallbackContext):
+    """Основная функция мониторинга планинга."""
+    global previous_state
+    try:
+        # Парсим текущие данные
+        current_data = parse_planning()
+        if not current_data:
+            return
 
-def send_parsed_data(context: CallbackContext):
-    """Скачивает, парсит и отправляет данные из планинга в чат."""
-    if not download_planning():
-        context.bot.send_message(chat_id=LOG_CHAT_ID, text="Не удалось скачать файл планинга.")
-        return
+        # Преобразуем данные в словарь для сравнения
+        current_state = {f"row_{i}": data for i, data in enumerate(current_data)}
 
-    df = read_planning()
-    if df is None:
-        context.bot.send_message(chat_id=LOG_CHAT_ID, text="Не удалось получить данные из планинга.")
-        return
+        # Сравниваем состояния
+        changes = compare_states(previous_state, current_state)
+        if changes:
+            for change in changes:
+                context.bot.send_message(chat_id=LOG_CHAT_ID, text=change)
 
-    parsed_data = parse_planning(df)
-    if not parsed_data:
-        context.bot.send_message(chat_id=LOG_CHAT_ID, text="Нет новых данных в планинге.")
-        return
+        # Обновляем предыдущее состояние
+        previous_state = current_state
+    except Exception as e:
+        logging.error(f"Ошибка при мониторинге планинга: {e}")
 
-    message = "Данные из планинга:\n"
-    for entry in parsed_data:
-        message += (
-            f"Дата: {entry['date']}, "
-            f"Номер РР: {entry['order']}, "
-            f"Марка/номер а/м: {entry['vehicle']}, "
-            f"ФИО водителя: {entry['driver']}\n"
-        )
-    context.bot.send_message(chat_id=LOG_CHAT_ID, text=message)
-
-def handle_message(update: Update, context: CallbackContext):
-    """Обрабатывает любые текстовые сообщения."""
-    user_message = update.message.text.lower()
+def start_monitoring(update: Update, context: CallbackContext):
+    """Команда для запуска мониторинга."""
     chat_id = update.message.chat_id
+    context.job_queue.run_repeating(
+        monitor_planning,
+        interval=600,  # Каждые 10 минут
+        first=0,
+        context=chat_id,
+        name=str(chat_id)
+    )
+    update.message.reply_text("Мониторинг планинга запущен.")
 
-    if user_message == "сегодня":
-        # Отправляем список заказов за сегодня
-        if not download_planning():
-            update.message.reply_text("Не удалось скачать файл планинга.")
-            return
-
-        df = read_planning()
-        if df is None:
-            update.message.reply_text("Не удалось получить данные из планинга.")
-            return
-
-        today_date = datetime.now().strftime("%y/%m/%d")
-        parsed_data = parse_planning(df)
-        orders_today = [
-            f"{entry['date']} - Номер РР №{entry['order']}"
-            for entry in parsed_data
-            if entry['date'] == today_date
-        ]
-
-        if orders_today:
-            update.message.reply_text("\n".join(orders_today))
-        else:
-            update.message.reply_text(f"За сегодня ({today_date}) заказов нет.")
+def stop_monitoring(update: Update, context: CallbackContext):
+    """Команда для остановки мониторинга."""
+    chat_id = update.message.chat_id
+    job = context.job_queue.get_jobs_by_name(str(chat_id))
+    if job:
+        for j in job:
+            j.schedule_removal()
+        update.message.reply_text("Мониторинг планинга остановлен.")
     else:
-        update.message.reply_text("Введите 'Сегодня', чтобы получить заказы за текущую дату.")
+        update.message.reply_text("Мониторинг не был запущен.")
 
 def main():
     """Основная функция."""
     updater = Updater(BOT_TOKEN)
     dispatcher = updater.dispatcher
 
-    # Регистрация обработчиков
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    # Регистрация команд
+    dispatcher.add_handler(CommandHandler("start_monitoring", start_monitoring))
+    dispatcher.add_handler(CommandHandler("stop_monitoring", stop_monitoring))
 
     # Запуск бота
     updater.start_polling()
