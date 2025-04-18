@@ -17,13 +17,30 @@ logging.basicConfig(
 # Константы
 PLANNING_URL = "https://cloud.toplubricants.ru/s/yWSpybsLPZkjjzp"
 BOT_TOKEN = "7738985245:AAEtSoP8Jc8vRuNEZd5RJQpJ-0NCMaW7Xys"
-START_ROW = 756
+START_ROW = 787  # Начинаем с 787 строки
 MONITOR_COLUMNS = ['I', 'L', 'M']
 WORK_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
 WORK_HOURS = (8, 18)
 
 # Глобальная переменная для хранения состояния планинга
 previous_state = {}
+
+def is_working_time():
+    """Проверяет, является ли текущее время рабочим."""
+    now = datetime.now()
+    current_day = now.strftime("%A")
+    current_hour = now.hour
+    if current_day not in WORK_DAYS or current_hour < WORK_HOURS[0] or current_hour >= WORK_HOURS[1]:
+        return False
+    return True
+
+def send_inactive_message(context: CallbackContext):
+    """Отправляет сообщение о неактивности бота."""
+    message = (
+        "Бот сейчас не активен. "
+        "Он вернется к работе в ближайший будний день в 8:00."
+    )
+    context.bot.send_message(chat_id=context.job.context, text=message)
 
 def download_planning():
     """Скачивает файл планинга и сохраняет его локально."""
@@ -52,7 +69,9 @@ def get_current_state(df):
     current_state = {}
     for row in range(START_ROW, len(df)):
         key = f"row_{row}"
+        date_value = df.iloc[row, 0]  # Столбец A (дата)
         values = {
+            'A': pd.to_datetime(date_value).strftime("%Y-%m-%d") if pd.notna(date_value) else None,  # Дата
             'I': str(df.iloc[row, 8]).strip() if pd.notna(df.iloc[row, 8]) else None,  # Марка, номер а/м
             'L': str(df.iloc[row, 11]).strip() if pd.notna(df.iloc[row, 11]) else None,  # Номер РР
             'M': str(df.iloc[row, 12]).strip() if pd.notna(df.iloc[row, 12]) else None   # ФИО водителя
@@ -68,7 +87,7 @@ def compare_states(previous, current):
             # Это новая строка
             order_number = current[key]['L']
             if order_number:
-                changes.append(f"Новый заказ №{order_number}")
+                changes.append(f"Новый заказ №{order_number} на дату {current[key]['A']}")
         elif previous[key] != current[key]:
             old_values = previous[key]
             new_values = current[key]
@@ -84,7 +103,7 @@ def compare_states(previous, current):
 
             # Проверяем другие изменения
             if old_values['I'] != new_values['I'] or old_values['M'] != new_values['M']:
-                change_message = f"Изменение в заказе №{order_number}: "
+                change_message = f"Изменение в заказе №{order_number} на дату {new_values['A']}: "
                 if old_values['I'] != new_values['I']:
                     change_message += f"{old_values['I']} -> {new_values['I']}; "
                 if old_values['M'] != new_values['M']:
@@ -96,6 +115,10 @@ def monitor_planning(context: CallbackContext):
     """Основная функция мониторинга планинга."""
     global previous_state
     try:
+        if not is_working_time():
+            send_inactive_message(context)
+            return
+
         # Скачиваем и читаем планинг
         download_planning()
         df = read_planning()
