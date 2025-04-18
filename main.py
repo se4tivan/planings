@@ -5,7 +5,7 @@ import pandas as pd
 import requests
 from datetime import datetime, timedelta
 from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
 # Настройка логирования
 logging.basicConfig(
@@ -21,9 +21,11 @@ START_ROW = 787  # Начинаем с 787 строки
 MONITOR_COLUMNS = ['I', 'L', 'M']
 WORK_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
 WORK_HOURS = (8, 18)
+LOG_CHAT_ID = -1002017911073  # ID чата для дублирования сообщений
 
 # Глобальная переменная для хранения состояния планинга
 previous_state = {}
+is_monitoring_active = False  # Флаг активности мониторинга
 
 def is_working_time():
     """Проверяет, является ли текущее время рабочим."""
@@ -141,6 +143,7 @@ def monitor_planning(context: CallbackContext):
 
 def start_monitoring(update: Update, context: CallbackContext):
     """Команда для запуска мониторинга."""
+    global is_monitoring_active
     chat_id = update.message.chat_id
     context.job_queue.run_repeating(
         monitor_planning,
@@ -149,18 +152,34 @@ def start_monitoring(update: Update, context: CallbackContext):
         context=chat_id,
         name=str(chat_id)
     )
+    is_monitoring_active = True
     update.message.reply_text("Мониторинг планинга запущен.")
 
 def stop_monitoring(update: Update, context: CallbackContext):
     """Команда для остановки мониторинга."""
+    global is_monitoring_active
     chat_id = update.message.chat_id
     job = context.job_queue.get_jobs_by_name(str(chat_id))
     if job:
         for j in job:
             j.schedule_removal()
+        is_monitoring_active = False
         update.message.reply_text("Мониторинг планинга остановлен.")
     else:
         update.message.reply_text("Мониторинг не был запущен.")
+
+def handle_message(update: Update, context: CallbackContext):
+    """Обрабатывает любые текстовые сообщения."""
+    user_message = update.message.text
+    chat_id = update.message.chat_id
+
+    # Отправляем статус бота
+    status = "Активен, мониторинг планинга запущен." if is_monitoring_active else "Неактивен, мониторинг планинга остановлен."
+    update.message.reply_text(status)
+
+    # Дублируем сообщение в лог-чат
+    log_message = f"Сообщение от пользователя (ID: {chat_id}): {user_message}"
+    context.bot.send_message(chat_id=LOG_CHAT_ID, text=log_message)
 
 def main():
     """Основная функция."""
@@ -170,6 +189,9 @@ def main():
     # Регистрация команд
     dispatcher.add_handler(CommandHandler("start_monitoring", start_monitoring))
     dispatcher.add_handler(CommandHandler("stop_monitoring", stop_monitoring))
+
+    # Обработка текстовых сообщений
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
 
     # Запуск бота
     updater.start_polling()
