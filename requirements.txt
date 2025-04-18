@@ -1,9 +1,4 @@
-python-telegram-bot==13.7
+python-telegram-bot==13.15
+pandas==2.1.0
 openpyxl==3.1.2
 requests==2.31.0
-schedule==1.2.0
-pytz==2023.3
-flask==2.3.3
-pandas==2.1.0               # Библиотека для работы с таблицами данных
-beautifulsoup4==4.12.2      # Библиотека для парсинга HTML (если используется)
-lxml==4.9.3                 # Парсер для BeautifulSoup (опционально)
