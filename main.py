@@ -52,7 +52,7 @@ def download_planning():
 def read_planning():
     """Читает данные из файла планинга."""
     try:
-        df = pd.read_excel("planning.xlsx", sheet_name=0, header=None)
+        df = pd.read_excel("planning.csv", sheet_name=0, header=None)
         return df
     except Exception as e:
         logging.error(f"Ошибка при чтении планинга: {e}")
