@@ -1,6 +1,9 @@
+import os
+import time
+import logging
+import pandas as pd
 import requests
-from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
@@ -12,77 +15,111 @@ logging.basicConfig(
 )
 
 # Константы
-PLANNING_URL = "https://cloud.toplubricants.ru/s/yWSpybsLPZkjjzp"  # Замените на URL веб-страницы
+PLANNING_URL = "https://cloud.toplubricants.ru/s/yWSpybsLPZkjjzp"
 BOT_TOKEN = "7738985245:AAEtSoP8Jc8vRuNEZd5RJQpJ-0NCMaW7Xys"
+START_ROW = 787  # Начинаем с 787 строки
+MONITOR_COLUMNS = ['I', 'L', 'M']
+WORK_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+WORK_HOURS = (8, 18)
 LOG_CHAT_ID = -1002017911073  # ID чата для отправки изменений планинга
 
-# Глобальная переменная для хранения предыдущего состояния
+# Глобальная переменная для хранения состояния планинга
 previous_state = {}
+is_monitoring_active = False  # Флаг активности мониторинга
 
-def parse_planning():
-    """Парсит данные из HTML-страницы."""
+def is_working_time():
+    """Проверяет, является ли текущее время рабочим."""
+    now = datetime.now()
+    current_day = now.strftime("%A")
+    current_hour = now.hour
+    if current_day not in WORK_DAYS or current_hour < WORK_HOURS[0] or current_hour >= WORK_HOURS[1]:
+        return False
+    return True
+
+def download_planning():
+    """Скачивает файл планинга и сохраняет его локально."""
     try:
         response = requests.get(PLANNING_URL)
-        if response.status_code != 200:
-            logging.error(f"Ошибка при получении данных: {response.status_code}")
-            return None
-
-        soup = BeautifulSoup(response.text, 'html.parser')
-        table = soup.find('table')  # Находим таблицу на странице
-        if not table:
-            logging.error("Таблица не найдена на странице.")
-            return None
-
-        data = []
-        rows = table.find_all('tr')
-        for row in rows[START_ROW:]:  # Начинаем с указанной строки
-            cols = row.find_all('td')
-            if len(cols) < 13:  # Проверяем, что строка содержит нужные столбцы
-                continue
-            date_value = cols[0].text.strip()  # Столбец A (дата)
-            vehicle_info = cols[8].text.strip()  # Столбец I (Марка, номер а/м)
-            order_number = cols[11].text.strip()  # Столбец L (Номер РР)
-            driver_info = cols[12].text.strip()  # Столбец M (ФИО водителя)
-            data.append({
-                'A': date_value,
-                'I': vehicle_info,
-                'L': order_number,
-                'M': driver_info
-            })
-        return data
+        if response.status_code == 200:
+            with open("planning.xlsx", "wb") as file:
+                file.write(response.content)
+            logging.info("Планинг успешно скачан.")
+        else:
+            logging.error(f"Ошибка при скачивании планинга: {response.status_code}")
     except Exception as e:
-        logging.error(f"Ошибка при парсинге данных: {e}")
+        logging.error(f"Ошибка при скачивании планинга: {e}")
+
+def read_planning():
+    """Читает данные из файла планинга."""
+    try:
+        df = pd.read_excel("planning.xlsx", sheet_name=0, header=None)
+        return df
+    except Exception as e:
+        logging.error(f"Ошибка при чтении планинга: {e}")
         return None
+
+def get_current_state(df):
+    """Получает текущее состояние мониторинговых столбцов."""
+    current_state = {}
+    for row in range(START_ROW, len(df)):
+        key = f"row_{row}"
+        date_value = df.iloc[row, 0]  # Столбец A (дата)
+        values = {
+            'A': pd.to_datetime(date_value).strftime("%y/%m/%d") if pd.notna(date_value) else None,  # Дата
+            'I': str(df.iloc[row, 8]).strip() if pd.notna(df.iloc[row, 8]) else None,  # Марка, номер а/м
+            'L': str(df.iloc[row, 11]).strip() if pd.notna(df.iloc[row, 11]) else None,  # Номер РР
+            'M': str(df.iloc[row, 12]).strip() if pd.notna(df.iloc[row, 12]) else None   # ФИО водителя
+        }
+        current_state[key] = values
+    return current_state
 
 def compare_states(previous, current):
     """Сравнивает предыдущее и текущее состояние планинга."""
     changes = []
-    for key, new_values in current.items():
+    for key in current:
         if key not in previous:
             # Это новая строка
-            if new_values['L']:
-                changes.append(f"Новый заказ №{new_values['L']} на дату {new_values['A']}")
-        elif previous[key] != new_values:
+            order_number = current[key]['L']
+            if order_number:
+                changes.append(f"Новый заказ №{order_number} на дату {current[key]['A']}")
+        elif previous[key] != current[key]:
             old_values = previous[key]
-            change_message = f"Изменение в заказе №{new_values['L']} на дату {new_values['A']}: "
-            if old_values['I'] != new_values['I']:
-                change_message += f"{old_values['I']} -> {new_values['I']}; "
-            if old_values['M'] != new_values['M']:
-                change_message += f"{old_values['M']} -> {new_values['M']}; "
-            changes.append(change_message.strip())
+            new_values = current[key]
+            order_number = new_values['L']
+
+            # Проверяем, добавлен ли водитель
+            if not old_values['M'] and new_values['M']:
+                changes.append(f"На заказ №{order_number} добавили: {new_values['M']}")
+
+            # Проверяем, добавлены ли данные о транспорте
+            if not old_values['I'] and new_values['I']:
+                changes.append(f"На заказ №{order_number} добавили: {new_values['I']}")
+
+            # Проверяем другие изменения
+            if old_values['I'] != new_values['I'] or old_values['M'] != new_values['M']:
+                change_message = f"Изменение в заказе №{order_number} на дату {new_values['A']}: "
+                if old_values['I'] != new_values['I']:
+                    change_message += f"{old_values['I']} -> {new_values['I']}; "
+                if old_values['M'] != new_values['M']:
+                    change_message += f"{old_values['M']} -> {new_values['M']}; "
+                changes.append(change_message.strip())
     return changes
 
 def monitor_planning(context: CallbackContext):
     """Основная функция мониторинга планинга."""
     global previous_state
     try:
-        # Парсим текущие данные
-        current_data = parse_planning()
-        if not current_data:
+        if not is_working_time():
             return
 
-        # Преобразуем данные в словарь для сравнения
-        current_state = {f"row_{i}": data for i, data in enumerate(current_data)}
+        # Скачиваем и читаем планинг
+        download_planning()
+        df = read_planning()
+        if df is None:
+            return
+
+        # Получаем текущее состояние
+        current_state = get_current_state(df)
 
         # Сравниваем состояния
         changes = compare_states(previous_state, current_state)
@@ -97,6 +134,7 @@ def monitor_planning(context: CallbackContext):
 
 def start_monitoring(update: Update, context: CallbackContext):
     """Команда для запуска мониторинга."""
+    global is_monitoring_active
     chat_id = update.message.chat_id
     context.job_queue.run_repeating(
         monitor_planning,
@@ -105,18 +143,54 @@ def start_monitoring(update: Update, context: CallbackContext):
         context=chat_id,
         name=str(chat_id)
     )
+    is_monitoring_active = True
     update.message.reply_text("Мониторинг планинга запущен.")
 
 def stop_monitoring(update: Update, context: CallbackContext):
     """Команда для остановки мониторинга."""
+    global is_monitoring_active
     chat_id = update.message.chat_id
     job = context.job_queue.get_jobs_by_name(str(chat_id))
     if job:
         for j in job:
             j.schedule_removal()
+        is_monitoring_active = False
         update.message.reply_text("Мониторинг планинга остановлен.")
     else:
         update.message.reply_text("Мониторинг не был запущен.")
+
+def handle_message(update: Update, context: CallbackContext):
+    """Обрабатывает любые текстовые сообщения."""
+    user_message = update.message.text.lower()
+    chat_id = update.message.chat_id
+
+    if user_message == "сегодня":
+        # Отправляем список заказов за сегодня
+        download_planning()
+        df = read_planning()
+        if df is None:
+            update.message.reply_text("Не удалось получить данные из планинга.")
+            return
+
+        today_date = datetime.now().strftime("%y/%m/%d")
+        orders_today = []
+        for row in range(START_ROW, len(df)):
+            date_value = pd.to_datetime(df.iloc[row, 0]).strftime("%y/%m/%d") if pd.notna(df.iloc[row, 0]) else None
+            order_number = str(df.iloc[row, 11]).strip() if pd.notna(df.iloc[row, 11]) else None
+            if date_value == today_date and order_number:
+                orders_today.append(f"{date_value} - Номер РР №{order_number}")
+
+        if orders_today:
+            update.message.reply_text("\n".join(orders_today))
+        else:
+            update.message.reply_text(f"За сегодня ({today_date}) заказов нет.")
+    else:
+        # Ответ на любое другое сообщение
+        if not is_working_time():
+            update.message.reply_text("Мониторинг приостановлен. Бот работает только в будние дни с 8:00 до 18:00.")
+        else:
+            status = "Активен, мониторинг планинга запущен." if is_monitoring_active else "Неактивен, мониторинг планинга остановлен."
+            update.message.reply_text(status)
 
 def main():
     """Основная функция."""
@@ -126,6 +200,9 @@ def main():
     # Регистрация команд
     dispatcher.add_handler(CommandHandler("start_monitoring", start_monitoring))
     dispatcher.add_handler(CommandHandler("stop_monitoring", stop_monitoring))
+
+    # Обработка текстовых сообщений
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
 
     # Запуск бота
     updater.start_polling()
