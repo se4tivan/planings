@@ -4,8 +4,8 @@ import logging
 import pandas as pd
 import requests
 from datetime import datetime
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, CallbackQueryHandler
+from telegram import Update, BotCommand
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
 # Настройка логирования
 logging.basicConfig(
@@ -139,13 +139,6 @@ def stop_monitoring(update: Update, context: CallbackContext):
     else:
         update.message.reply_text("Мониторинг не был запущен.")
 
-def handle_message(update: Update, context: CallbackContext):
-    """Обрабатывает любые текстовые сообщения."""
-    if is_working_time():
-        update.message.reply_text("Ведется активный мониторинг планинга.")
-    else:
-        update.message.reply_text("Мониторинг планинга не ведется.")
-
 def show_today_orders(update: Update, context: CallbackContext):
     """Показывает заказы на сегодняшний день."""
     try:
@@ -164,40 +157,43 @@ def show_today_orders(update: Update, context: CallbackContext):
                 orders.append(f"{today} - Номер РР {str(order_number).strip()}")
 
         if orders:
-            update.message.reply_text("\n".join(orders), reply_markup=ReplyKeyboardRemove())
+            update.message.reply_text("\n".join(orders))
         else:
-            update.message.reply_text("На сегодня заказов нет.", reply_markup=ReplyKeyboardRemove())
+            update.message.reply_text("На сегодня заказов нет.")
     except Exception as e:
         logging.error(f"Ошибка при получении заказов на сегодня: {e}")
         update.message.reply_text("Произошла ошибка при получении заказов.")
+
+def set_bot_commands(bot):
+    """Устанавливает список доступных команд для бота."""
+    commands = [
+        BotCommand("сегодня", "Показать заказы на сегодня"),
+        BotCommand("старт", "Запустить мониторинг планинга"),
+        BotCommand("стоп", "Остановить мониторинг планинга"),
+    ]
+    bot.set_my_commands(commands)
 
 def main():
     """Основная функция."""
     updater = Updater(BOT_TOKEN)
     dispatcher = updater.dispatcher
 
+    # Устанавливаем команды для бота
+    set_bot_commands(updater.bot)
+
     # Регистрация команд
-    dispatcher.add_handler(CommandHandler("start_monitoring", start_monitoring))
-    dispatcher.add_handler(CommandHandler("stop_monitoring", stop_monitoring))
+    dispatcher.add_handler(CommandHandler("сегодня", show_today_orders))
+    dispatcher.add_handler(CommandHandler("старт", start_monitoring))
+    dispatcher.add_handler(CommandHandler("стоп", stop_monitoring))
 
     # Обработка текстовых сообщений
+    def handle_message(update: Update, context: CallbackContext):
+        if is_working_time():
+            update.message.reply_text("Ведется активный мониторинг планинга.")
+        else:
+            update.message.reply_text("Мониторинг планинга не ведется.")
+
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-
-    # Кнопка "Сегодня"
-    def button_handler(update: Update, context: CallbackContext):
-        query = update.callback_query
-        if query.data == "today":
-            show_today_orders(update, context)
-
-    dispatcher.add_handler(CallbackQueryHandler(button_handler))
-
-    # Команда для показа кнопки "Сегодня"
-    def show_today_button(update: Update, context: CallbackContext):
-        keyboard = [[{"text": "Сегодня", "callback_data": "today"}]]
-        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
-        update.message.reply_text("Нажмите кнопку 'Сегодня', чтобы увидеть заказы на сегодня:", reply_markup=reply_markup)
-
-    dispatcher.add_handler(CommandHandler("today", show_today_button))
 
     # Запуск бота
     updater.start_polling()
