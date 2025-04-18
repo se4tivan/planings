@@ -46,13 +46,21 @@ def download_planning():
             logging.info("Планинг успешно скачан.")
         else:
             logging.error(f"Ошибка при скачивании планинга: {response.status_code}")
+            raise Exception(f"Ошибка при скачивании планинга: {response.status_code}")
     except Exception as e:
         logging.error(f"Ошибка при скачивании планинга: {e}")
+        return False
+    return True
 
 def read_planning():
     """Читает данные из файла планинга."""
     try:
-        df = pd.read_excel("planning.csv", sheet_name=0, header=None)
+        if not os.path.exists("planning.xlsx"):
+            logging.error("Файл планинга не найден.")
+            return None
+
+        df = pd.read_excel("planning.xlsx", sheet_name=0, header=None)
+        logging.info("Планинг успешно прочитан.")
         return df
     except Exception as e:
         logging.error(f"Ошибка при чтении планинга: {e}")
@@ -166,7 +174,10 @@ def handle_message(update: Update, context: CallbackContext):
 
     if user_message == "сегодня":
         # Отправляем список заказов за сегодня
-        download_planning()
+        if not download_planning():
+            update.message.reply_text("Не удалось скачать файл планинга.")
+            return
+
         df = read_planning()
         if df is None:
             update.message.reply_text("Не удалось получить данные из планинга.")
