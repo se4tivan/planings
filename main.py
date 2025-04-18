@@ -21,7 +21,7 @@ START_ROW = 787  # Начинаем с 787 строки
 MONITOR_COLUMNS = ['I', 'L', 'M']
 WORK_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
 WORK_HOURS = (8, 18)
-LOG_CHAT_ID = -1002017911073  # ID чата для отправки изменений планинга
+LOG_CHAT_ID = -1002017911073  # ID чата для дублирования сообщений
 
 # Глобальная переменная для хранения состояния планинга
 previous_state = {}
@@ -35,6 +35,14 @@ def is_working_time():
     if current_day not in WORK_DAYS or current_hour < WORK_HOURS[0] or current_hour >= WORK_HOURS[1]:
         return False
     return True
+
+def send_inactive_message(context: CallbackContext):
+    """Отправляет сообщение о неактивности бота."""
+    message = (
+        "Бот сейчас не активен. "
+        "Он вернется к работе в ближайший будний день в 8:00."
+    )
+    context.bot.send_message(chat_id=context.job.context, text=message)
 
 def download_planning():
     """Скачивает файл планинга и сохраняет его локально."""
@@ -65,7 +73,7 @@ def get_current_state(df):
         key = f"row_{row}"
         date_value = df.iloc[row, 0]  # Столбец A (дата)
         values = {
-            'A': pd.to_datetime(date_value).strftime("%y/%m/%d") if pd.notna(date_value) else None,  # Дата
+            'A': pd.to_datetime(date_value).strftime("%Y-%m-%d") if pd.notna(date_value) else None,  # Дата
             'I': str(df.iloc[row, 8]).strip() if pd.notna(df.iloc[row, 8]) else None,  # Марка, номер а/м
             'L': str(df.iloc[row, 11]).strip() if pd.notna(df.iloc[row, 11]) else None,  # Номер РР
             'M': str(df.iloc[row, 12]).strip() if pd.notna(df.iloc[row, 12]) else None   # ФИО водителя
@@ -110,6 +118,7 @@ def monitor_planning(context: CallbackContext):
     global previous_state
     try:
         if not is_working_time():
+            send_inactive_message(context)
             return
 
         # Скачиваем и читаем планинг
@@ -125,7 +134,7 @@ def monitor_planning(context: CallbackContext):
         changes = compare_states(previous_state, current_state)
         if changes:
             for change in changes:
-                context.bot.send_message(chat_id=LOG_CHAT_ID, text=change)
+                context.bot.send_message(chat_id=context.job.context, text=change)
 
         # Обновляем предыдущее состояние
         previous_state = current_state
@@ -161,36 +170,16 @@ def stop_monitoring(update: Update, context: CallbackContext):
 
 def handle_message(update: Update, context: CallbackContext):
     """Обрабатывает любые текстовые сообщения."""
-    user_message = update.message.text.lower()
+    user_message = update.message.text
     chat_id = update.message.chat_id
 
-    if user_message == "сегодня":
-        # Отправляем список заказов за сегодня
-        download_planning()
-        df = read_planning()
-        if df is None:
-            update.message.reply_text("Не удалось получить данные из планинга.")
-            return
+    # Отправляем статус бота
+    status = "Активен, мониторинг планинга запущен." if is_monitoring_active else "Неактивен, мониторинг планинга остановлен."
+    update.message.reply_text(status)
 
-        today_date = datetime.now().strftime("%y/%m/%d")
-        orders_today = []
-        for row in range(START_ROW, len(df)):
-            date_value = pd.to_datetime(df.iloc[row, 0]).strftime("%y/%m/%d") if pd.notna(df.iloc[row, 0]) else None
-            order_number = str(df.iloc[row, 11]).strip() if pd.notna(df.iloc[row, 11]) else None
-            if date_value == today_date and order_number:
-                orders_today.append(f"{date_value} - Номер РР №{order_number}")
-
-        if orders_today:
-            update.message.reply_text("\n".join(orders_today))
-        else:
-            update.message.reply_text(f"За сегодня ({today_date}) заказов нет.")
-    else:
-        # Ответ на любое другое сообщение
-        if not is_working_time():
-            update.message.reply_text("Мониторинг приостановлен. Бот работает только в будние дни с 8:00 до 18:00.")
-        else:
-            status = "Активен, мониторинг планинга запущен." if is_monitoring_active else "Неактивен, мониторинг планинга остановлен."
-            update.message.reply_text(status)
+    # Дублируем сообщение в лог-чат
+    log_message = f"Сообщение от пользователя (ID: {chat_id}): {user_message}"
+    context.bot.send_message(chat_id=LOG_CHAT_ID, text=log_message)
 
 def main():
     """Основная функция."""
